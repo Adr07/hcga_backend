@@ -1,0 +1,16 @@
+# Dependencias (GoDaddy ejecuta npm install)
+node_modules/
+
+# Secretos: solo en las variables de entorno de GoDaddy
+.env
+.env.*
+!.env.example
+
+# Certificados generados (contienen datos de clientes)
+storage/
+
+# Paquetes y registros
+*.zip
+*.log
+.DS_Store
+Thumbs.db
