@@ -65,15 +65,22 @@ Límites: 30 peticiones por minuto por IP y 16 KB por petición. CORS restringid
 | `SUPABASE_SECRET_KEY` | Sí | Supabase → Project Settings → API Keys → **Secret key** (`sb_secret_...`) |
 | `ALLOWED_ORIGINS` | No | Por defecto `https://hcgatrading.com,https://www.hcgatrading.com` |
 | `CERT_STORAGE_DIR` | No | Por defecto `storage/certificados` dentro de la app |
-| `MAIL_USER` | Para el correo | `ing.alberto@hcgatrading.com` |
-| `MAIL_PASS` | Para el correo | Contraseña del buzón (secreta) |
+| `MAIL_RELAY_URL` | Para el correo (GoDaddy) | `https://hcgatrading.com/correo/enviar.php` |
+| `MAIL_RELAY_SECRET` | Para el correo (GoDaddy) | Clave compartida con `correo/config.php` del cPanel (secreta) |
+| `MAIL_USER` | Correo por SMTP (alternativa) | `ing.alberto@hcgatrading.com` |
+| `MAIL_PASS` | Correo por SMTP (alternativa) | Contraseña del buzón (secreta) |
 | `MAIL_HOST` / `MAIL_PORT` | No | Por defecto `smtp.office365.com` / `587` |
 | `MAIL_FROM` / `MAIL_FROM_NAME` | No | Por defecto `MAIL_USER` / `HCGA Trading LLC` |
 | `PORT` | No | Lo asigna la plataforma |
 
-Sin `MAIL_USER`/`MAIL_PASS` el correo automático queda desactivado y todo lo demás sigue funcionando.
-El buzón es de Microsoft 365 contratado en GoDaddy: requiere activar **Autenticación SMTP**
-en GoDaddy → Email y Office → Administrar → Opciones avanzadas.
+Si están definidas `MAIL_RELAY_URL` y `MAIL_RELAY_SECRET`, el correo se envía por la
+**pasarela del cPanel**: la app firma la petición (HMAC-SHA256 con marca de tiempo) y
+`correo/enviar.php` lo envía con el servidor de correo de GoDaddy. Es el modo necesario en
+GoDaddy Node.js Hosting, que **bloquea el SMTP saliente** (comprobado: `connect EACCES ...:587`).
+
+Si no, y están `MAIL_USER`/`MAIL_PASS`, se usa SMTP directo con Microsoft 365 (útil en local;
+requiere activar **Autenticación SMTP** en GoDaddy → Email y Office → Administrar → Opciones
+avanzadas). Sin ninguno de los dos, el correo queda desactivado y todo lo demás sigue funcionando.
 
 La clave secreta da acceso total a la base de datos: solo va en las variables de
 entorno del hosting, nunca en el código, en el repositorio ni en un chat.
@@ -105,11 +112,10 @@ En ambos casos:
    `certificados.hcgatrading.com`. No conectes `hcgatrading.com`: es el sitio en cPanel.
 5. Comprueba `https://certificados.hcgatrading.com/health`.
 
-Correo desde GoDaddy: según las reglas publicadas de Node.js Hosting, las apps solo
-pueden salir por HTTP/HTTPS, por lo que el SMTP (puerto 587) podría estar bloqueado
-allí. Compruébalo tras publicar: si el registro devuelve `email_status: "error"` con un
-error de conexión, hay que cambiar el transporte de `correo.js` (por ejemplo, envío
-desde el cPanel con el relé de GoDaddy) sin tocar el resto.
+Correo desde GoDaddy: Node.js Hosting solo permite salir por HTTP/HTTPS, así que usa la
+pasarela del cPanel (`MAIL_RELAY_URL` + `MAIL_RELAY_SECRET`). En el cPanel, la carpeta
+`correo/` del sitio necesita un `config.php` (copia de `config.example.php`) con la misma
+clave en `secret`.
 
 Reglas de GoDaddy que esta app ya cumple: `package.json` en la raíz con `name`,
 `version`, `main`, `build` y `start`; puerto desde `process.env.PORT`; dependencias

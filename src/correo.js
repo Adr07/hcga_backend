@@ -6,10 +6,14 @@
  * nunca "fue aceptado": "aceptado" puede leerse como que HCGA ya aceptó a la
  * persona como cliente.
  *
- * redactarCorreo() solo compone el mensaje; crearTransporteSmtp() lo envía.
- * Así se puede cambiar el método de envío sin tocar el contenido.
+ * redactarCorreo() solo compone el mensaje; un transporte lo envía:
+ *   crearTransportePasarela()  HTTPS a correo/enviar.php del cPanel (servidor de
+ *                              correo de GoDaddy). Es el que funciona en GoDaddy
+ *                              Node.js Hosting, que bloquea el SMTP saliente.
+ *   crearTransporteSmtp()      SMTP directo (útil en local o en otro hosting).
  */
 import nodemailer from "nodemailer";
+import { createHmac } from "node:crypto";
 
 const CONTACTO = "ing.alberto@hcgatrading.com";
 
@@ -123,6 +127,36 @@ export function crearTransporteSmtp({ host, port, user, pass, from, fromName }) 
     async send({ to, subject, text, html, attachments }) {
       const info = await transporte.sendMail({ from: { name: fromName, address: from }, to, subject, text, html, attachments });
       return { messageId: info.messageId };
+    },
+  };
+}
+
+/**
+ * Transporte por la pasarela PHP del cPanel (public/correo/enviar.php).
+ * Firma cada petición con HMAC-SHA256(secreto, timestamp + "." + cuerpo).
+ */
+export function crearTransportePasarela({ url, secret, fetchImpl = fetch, timeoutMs = 30000 }) {
+  return {
+    async send({ to, subject, text, html, attachments = [] }) {
+      const cuerpo = JSON.stringify({
+        to, subject, text, html,
+        attachments: attachments.map((a) => ({
+          filename: a.filename,
+          contentType: a.contentType,
+          contentBase64: Buffer.from(a.content).toString("base64"),
+        })),
+      });
+      const ts = String(Math.floor(Date.now() / 1000));
+      const firma = createHmac("sha256", secret).update(`${ts}.${cuerpo}`).digest("hex");
+      const r = await fetchImpl(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-HCGA-Timestamp": ts, "X-HCGA-Signature": firma },
+        body: cuerpo,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.ok) throw new Error(`pasarela de correo: HTTP ${r.status} ${d.error || ""} ${d.detail || ""}`.trim());
+      return { messageId: d.messageId };
     },
   };
 }

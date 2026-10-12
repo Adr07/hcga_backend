@@ -13,9 +13,11 @@
  *   SUPABASE_SECRET_KEY   clave secreta (sb_secret_...) o service_role. NUNCA en el código.
  *   ALLOWED_ORIGINS       orígenes del formulario, separados por comas
  *   CERT_STORAGE_DIR      carpeta de la copia local (por defecto <app>/storage/certificados)
- *   MAIL_USER, MAIL_PASS  buzón que envía el correo automático (sin ellos, el correo se desactiva)
- *   MAIL_HOST, MAIL_PORT  por defecto smtp.office365.com:587 (Microsoft 365)
- *   MAIL_FROM, MAIL_FROM_NAME  remitente (por defecto MAIL_USER y "HCGA Trading LLC")
+ *   Correo automático (sin ninguno de los dos modos, se desactiva):
+ *   MAIL_RELAY_URL, MAIL_RELAY_SECRET  pasarela PHP del cPanel (recomendado en GoDaddy,
+ *                         que bloquea el SMTP saliente de las apps Node.js)
+ *   MAIL_USER, MAIL_PASS  SMTP directo (MAIL_HOST/MAIL_PORT, por defecto smtp.office365.com:587)
+ *   MAIL_FROM, MAIL_FROM_NAME  remitente para SMTP (por defecto MAIL_USER y "HCGA Trading LLC")
  *   PORT                  lo asigna la plataforma
  */
 import http from "node:http";
@@ -29,7 +31,7 @@ import * as PDFLib from "pdf-lib";
 import { generarCertificado } from "./certificado.js";
 import { createHandler } from "./handler.js";
 import { PLANTILLA_BASE64 } from "./plantilla.js";
-import { crearTransporteSmtp } from "./correo.js";
+import { crearTransporteSmtp, crearTransportePasarela } from "./correo.js";
 
 const qrcode = createRequire(import.meta.url)("qrcode-generator");
 const RUTA = "/api/certificados/emitir";
@@ -241,7 +243,9 @@ if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
   } catch (e) {
     console.warn(`[certificados] No se pudo crear ${localDir}: ${e.message}. Solo se guardará en Supabase.`);
   }
-  const mail = process.env.MAIL_USER && process.env.MAIL_PASS
+  const mail = process.env.MAIL_RELAY_URL && process.env.MAIL_RELAY_SECRET
+    ? crearTransportePasarela({ url: process.env.MAIL_RELAY_URL, secret: process.env.MAIL_RELAY_SECRET })
+    : process.env.MAIL_USER && process.env.MAIL_PASS
     ? crearTransporteSmtp({
       host: process.env.MAIL_HOST || "smtp.office365.com",
       port: Number(process.env.MAIL_PORT) || 587,
@@ -251,7 +255,8 @@ if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
       fromName: process.env.MAIL_FROM_NAME || "HCGA Trading LLC",
     })
     : null;
-  if (!mail) console.warn("[certificados] MAIL_USER/MAIL_PASS no definidos: el correo automático está desactivado.");
+  if (!mail) console.warn("[certificados] Sin MAIL_RELAY_URL/MAIL_RELAY_SECRET ni MAIL_USER/MAIL_PASS: el correo automático está desactivado.");
+  else console.log(`[certificados] correo automático por ${process.env.MAIL_RELAY_URL ? "pasarela cPanel" : "SMTP"}`);
   createServer(supabaseDeps({ url: process.env.SUPABASE_URL, secretKey: process.env.SUPABASE_SECRET_KEY, allowedOrigins, localDir, mail }))
     .listen(port, () => console.log(`[certificados] escuchando en el puerto ${port}; copias locales en ${path.resolve(localDir)}`));
 }
