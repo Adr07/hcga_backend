@@ -34,6 +34,7 @@ import { PLANTILLA_BASE64 } from "./plantilla.js";
 import { crearTransporteSmtp, crearTransportePasarela } from "./correo.js";
 
 const qrcode = createRequire(import.meta.url)("qrcode-generator");
+const { version: VERSION } = createRequire(import.meta.url)("../package.json");
 const RUTA = "/api/certificados/emitir";
 const CUERPO_MAXIMO = 16 * 1024;
 const LIMITE_POR_MINUTO = 30; // por IP; el proceso es persistente, basta con memoria
@@ -73,13 +74,14 @@ export function carpetaLocal(raiz) {
 }
 
 /** Dependencias reales: Supabase (base de datos + Storage) y el generador del PDF. */
-export function supabaseDeps({ url, secretKey, allowedOrigins, localDir = CARPETA_POR_DEFECTO, mail = null }) {
+export function supabaseDeps({ url, secretKey, allowedOrigins, localDir = CARPETA_POR_DEFECTO, mail = null, mailMode = null }) {
   const supabase = createClient(url, secretKey, { auth: { persistSession: false, autoRefreshToken: false } });
   const plantilla = Uint8Array.from(Buffer.from(PLANTILLA_BASE64, "base64"));
   return {
     allowedOrigins,
     local: carpetaLocal(localDir),
     mail,
+    mailMode,
     async claimEmail(c) {
       const atascado = new Date(Date.now() - CORREO_ATASCADO_MS).toISOString();
       const { data, error } = await supabase.from("certificates")
@@ -198,7 +200,8 @@ export function createServer(deps) {
     const url = new URL(req.url, "http://localhost");
     try {
       if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/")) {
-        return json(res, 200, { ok: true, service: "hcga-certificados" });
+        // Diagnóstico sin secretos: versión desplegada y modo de correo activo.
+        return json(res, 200, { ok: true, service: "hcga-certificados", version: VERSION, mail: deps.mailMode || "disabled" });
       }
       if (url.pathname !== RUTA) return json(res, 404, { error: "not_found" });
 
@@ -257,6 +260,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
     : null;
   if (!mail) console.warn("[certificados] Sin MAIL_RELAY_URL/MAIL_RELAY_SECRET ni MAIL_USER/MAIL_PASS: el correo automático está desactivado.");
   else console.log(`[certificados] correo automático por ${process.env.MAIL_RELAY_URL ? "pasarela cPanel" : "SMTP"}`);
-  createServer(supabaseDeps({ url: process.env.SUPABASE_URL, secretKey: process.env.SUPABASE_SECRET_KEY, allowedOrigins, localDir, mail }))
+  const mailMode = !mail ? "disabled" : process.env.MAIL_RELAY_URL && process.env.MAIL_RELAY_SECRET ? "relay" : "smtp";
+  createServer(supabaseDeps({ url: process.env.SUPABASE_URL, secretKey: process.env.SUPABASE_SECRET_KEY, allowedOrigins, localDir, mail, mailMode }))
     .listen(port, () => console.log(`[certificados] escuchando en el puerto ${port}; copias locales en ${path.resolve(localDir)}`));
 }

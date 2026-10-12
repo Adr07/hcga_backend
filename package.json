@@ -1,6 +1,6 @@
 {
   "name": "hcga-certificados",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "HCGA Trading LLC: genera el Certificado Digital de Intención Comercial en PDF y lo guarda en Supabase Storage.",
   "type": "module",
