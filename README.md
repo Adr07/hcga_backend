@@ -14,6 +14,12 @@ cuándo se guardó cada copia. Si la copia local se pierde (por ejemplo, el disc
 se vacía al redesplegar), se restaura sola desde Supabase la siguiente vez que se
 pide ese certificado.
 
+Al emitirlo, envía automáticamente al titular (desde `ing.alberto@hcgatrading.com`)
+el correo de **confirmación del registro** con el **certificado PDF adjunto** y un
+botón para confirmar su correo (`confirmar.html`). Se envía una sola vez; si falla
+se reintenta en la siguiente petición (máx. 5 intentos). El estado queda en
+`certificates.email_status` / `email_sent_at` / `email_error`.
+
 ## Estructura
 
 ```
@@ -21,6 +27,7 @@ src/
   server.js        Servidor HTTP, conexión con Supabase y carpeta local
   handler.js       Lógica de emisión (validación, idempotencia, errores)
   certificado.js   Composición del PDF: posiciones, texto, sello y QR
+  correo.js        Correo automático (español/inglés) y envío SMTP
   plantilla.js     Plantilla oficial (página 1, sin marcadores), en base64
 supabase/
   registrations.sql  Esquema completo de la base de datos (idempotente)
@@ -58,7 +65,15 @@ Límites: 30 peticiones por minuto por IP y 16 KB por petición. CORS restringid
 | `SUPABASE_SECRET_KEY` | Sí | Supabase → Project Settings → API Keys → **Secret key** (`sb_secret_...`) |
 | `ALLOWED_ORIGINS` | No | Por defecto `https://hcgatrading.com,https://www.hcgatrading.com` |
 | `CERT_STORAGE_DIR` | No | Por defecto `storage/certificados` dentro de la app |
+| `MAIL_USER` | Para el correo | `ing.alberto@hcgatrading.com` |
+| `MAIL_PASS` | Para el correo | Contraseña del buzón (secreta) |
+| `MAIL_HOST` / `MAIL_PORT` | No | Por defecto `smtp.office365.com` / `587` |
+| `MAIL_FROM` / `MAIL_FROM_NAME` | No | Por defecto `MAIL_USER` / `HCGA Trading LLC` |
 | `PORT` | No | Lo asigna la plataforma |
+
+Sin `MAIL_USER`/`MAIL_PASS` el correo automático queda desactivado y todo lo demás sigue funcionando.
+El buzón es de Microsoft 365 contratado en GoDaddy: requiere activar **Autenticación SMTP**
+en GoDaddy → Email y Office → Administrar → Opciones avanzadas.
 
 La clave secreta da acceso total a la base de datos: solo va en las variables de
 entorno del hosting, nunca en el código, en el repositorio ni en un chat.
@@ -89,6 +104,12 @@ En ambos casos:
 4. Revisa la vista previa privada, publica y conecta **solo el subdominio**
    `certificados.hcgatrading.com`. No conectes `hcgatrading.com`: es el sitio en cPanel.
 5. Comprueba `https://certificados.hcgatrading.com/health`.
+
+Correo desde GoDaddy: según las reglas publicadas de Node.js Hosting, las apps solo
+pueden salir por HTTP/HTTPS, por lo que el SMTP (puerto 587) podría estar bloqueado
+allí. Compruébalo tras publicar: si el registro devuelve `email_status: "error"` con un
+error de conexión, hay que cambiar el transporte de `correo.js` (por ejemplo, envío
+desde el cPanel con el relé de GoDaddy) sin tocar el resto.
 
 Reglas de GoDaddy que esta app ya cumple: `package.json` en la raíz con `name`,
 `version`, `main`, `build` y `start`; puerto desde `process.env.PORT`; dependencias

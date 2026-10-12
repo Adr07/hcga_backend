@@ -188,6 +188,13 @@ create table if not exists public.certificates (
   generation_error        text,
   local_stored_at         timestamptz,                                     -- copia en storage/certificados/ del servidor
 
+  -- Correo automático al titular: certificado adjunto + confirmación del registro
+  email_status            text not null default 'pending'
+                            check (email_status in ('pending', 'sending', 'sent', 'error')),
+  email_sent_at           timestamptz,
+  email_attempts          integer not null default 0,
+  email_error             text,
+
   revoked_at              timestamptz,
   revocation_reason       text,
   created_at              timestamptz not null default now(),
@@ -200,6 +207,11 @@ create table if not exists public.certificates (
 );
 
 alter table public.certificates add column if not exists local_stored_at timestamptz;
+alter table public.certificates add column if not exists email_status text not null default 'pending'
+  check (email_status in ('pending', 'sending', 'sent', 'error'));
+alter table public.certificates add column if not exists email_sent_at  timestamptz;
+alter table public.certificates add column if not exists email_attempts integer not null default 0;
+alter table public.certificates add column if not exists email_error    text;
 
 -- Solo un certificado vigente por registro.
 create unique index if not exists certificates_one_active_idx
@@ -572,6 +584,8 @@ select c.cui,
        c.file_size,
        c.generated_at,
        c.local_stored_at,
+       c.email_status,
+       c.email_sent_at,
        c.verification_url
   from public.certificates c
   join public.registrations r on r.id = c.registration_id;

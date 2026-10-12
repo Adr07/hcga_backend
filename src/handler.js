@@ -10,6 +10,10 @@
  * intenta siempre y, si falta (p. ej. el disco se vació al redesplegar), se
  * restaura desde Supabase en la siguiente petición.
  *
+ * Después envía al titular el correo de confirmación del registro con el PDF
+ * adjunto (una sola vez; si falla se reintenta en la siguiente petición, hasta
+ * MAX_INTENTOS_CORREO). Un fallo del correo nunca impide entregar el certificado.
+ *
  * Quién puede llamarla: solo quien tiene el token del certificado, que
  * register_interest() devuelve únicamente al titular. Es idempotente: si el PDF
  * ya existe no se vuelve a generar (el documento no cambia tras entregarse).
@@ -19,9 +23,12 @@
  * le inyectan dobles.
  */
 
+import { redactarCorreo } from "./correo.js";
+
 const TOKEN_RE = /^[A-Z2-9]{32}$/;
 const CUI_RE = /^HCGA-CI-\d{4}-[A-Z0-9]{6}$/;
 const URL_TTL_SECONDS = 60 * 60; // la URL firmada caduca en 1 hora
+const MAX_INTENTOS_CORREO = 5;
 
 export function rutaDe(c) {
   return `${new Date(c.issued_at).getUTCFullYear()}/${c.cui}/CERT-${c.cui}-v${c.version}.pdf`;
@@ -70,13 +77,40 @@ export function createHandler(deps) {
     return c;
   }
 
-  async function firmar(req, c) {
+  async function leerPdf(c) {
+    if (deps.local && await deps.local.exists(c.storage_path)) return deps.local.read(c.storage_path);
+    return deps.download(c.storage_bucket, c.storage_path);
+  }
+
+  // Devuelve el estado del correo tras intentar enviarlo: sent | sending | error | pending | disabled
+  async function enviarCorreo(c, pdf) {
+    if (!deps.mail) return "disabled";
+    if (c.email_status === "sent") return "sent";
+    if ((c.email_attempts || 0) >= MAX_INTENTOS_CORREO) return c.email_status;
+    // Reserva atómica: si dos peticiones llegan a la vez, solo una envía.
+    if (!await deps.claimEmail(c)) return c.email_status === "error" ? "error" : "sending";
+    try {
+      const titular = await deps.findHolder(c.registration_id);
+      if (!titular) throw new Error("titular no encontrado");
+      const mensaje = redactarCorreo({ certificado: c, titular, pdf: pdf || await leerPdf(c) });
+      await deps.mail.send(mensaje);
+      await deps.markEmail(c.id, { status: "sent" });
+      return "sent";
+    } catch (e) {
+      deps.log?.("correo no enviado", c.cui, e?.message || e);
+      await deps.markEmail(c.id, { status: "error", error: String(e?.message || e).slice(0, 500) });
+      return "error";
+    }
+  }
+
+  async function firmar(req, c, emailStatus) {
     const url = await deps.signedUrl(c.storage_bucket, c.storage_path, URL_TTL_SECONDS, `CERT-${c.cui}.pdf`);
     return json(req, 200, {
       cui: c.cui,
       version: c.version,
       status: c.status,
       verification_url: c.verification_url,
+      email_status: emailStatus,
       download_url: url,
       expires_in: URL_TTL_SECONDS,
     });
@@ -98,7 +132,10 @@ export function createHandler(deps) {
     if (!c || c.cui !== cui) return json(req, 404, { error: "not_found" });
     if (c.status === "revoked") return json(req, 410, { error: "revoked" });
 
-    if (c.generation_status === "generated" && c.storage_path) return firmar(req, await restaurarLocal(c));
+    if (c.generation_status === "generated" && c.storage_path) {
+      const actual = await restaurarLocal(c);
+      return firmar(req, actual, await enviarCorreo(actual, null));
+    }
 
     const ruta = rutaDe(c);
     try {
@@ -115,7 +152,7 @@ export function createHandler(deps) {
         attempts: (c.generation_attempts || 0) + 1,
         local_stored: local,
       });
-      return firmar(req, actualizado);
+      return firmar(req, actualizado, await enviarCorreo(actualizado, pdf));
     } catch (e) {
       await deps.markError(c.id, String((e && e.message) || e).slice(0, 500), (c.generation_attempts || 0) + 1);
       return json(req, 500, { error: "generation_failed" });

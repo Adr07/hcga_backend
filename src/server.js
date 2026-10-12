@@ -13,19 +13,23 @@
  *   SUPABASE_SECRET_KEY   clave secreta (sb_secret_...) o service_role. NUNCA en el código.
  *   ALLOWED_ORIGINS       orígenes del formulario, separados por comas
  *   CERT_STORAGE_DIR      carpeta de la copia local (por defecto <app>/storage/certificados)
+ *   MAIL_USER, MAIL_PASS  buzón que envía el correo automático (sin ellos, el correo se desactiva)
+ *   MAIL_HOST, MAIL_PORT  por defecto smtp.office365.com:587 (Microsoft 365)
+ *   MAIL_FROM, MAIL_FROM_NAME  remitente (por defecto MAIL_USER y "HCGA Trading LLC")
  *   PORT                  lo asigna la plataforma
  */
 import http from "node:http";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { mkdir, writeFile, rename, access } from "node:fs/promises";
+import { mkdir, writeFile, rename, access, readFile } from "node:fs/promises";
 import path from "node:path";
 import { createClient } from "@supabase/supabase-js";
 import * as PDFLib from "pdf-lib";
 import { generarCertificado } from "./certificado.js";
 import { createHandler } from "./handler.js";
 import { PLANTILLA_BASE64 } from "./plantilla.js";
+import { crearTransporteSmtp } from "./correo.js";
 
 const qrcode = createRequire(import.meta.url)("qrcode-generator");
 const RUTA = "/api/certificados/emitir";
@@ -34,7 +38,9 @@ const LIMITE_POR_MINUTO = 30; // por IP; el proceso es persistente, basta con me
 
 const COLUMNAS = "id, cui, version, status, issued_at, verified_at, company_identification, holder_name, " +
   "holder_id_masked, holder_role, holder_email_masked, holder_phone_masked, verification_url, seal, " +
-  "generation_status, generation_attempts, storage_bucket, storage_path, local_stored_at";
+  "generation_status, generation_attempts, storage_bucket, storage_path, local_stored_at, " +
+  "registration_id, email_status, email_attempts";
+const CORREO_ATASCADO_MS = 10 * 60 * 1000; // un envío "sending" más antiguo se considera abandonado
 
 export const CARPETA_POR_DEFECTO = fileURLToPath(new URL("../storage/certificados/", import.meta.url));
 
@@ -49,6 +55,7 @@ export function carpetaLocal(raiz) {
   };
   return {
     raiz: base,
+    read: (ruta) => readFile(destino(ruta)),
     async exists(ruta) {
       try { await access(destino(ruta)); return true; } catch { return false; }
     },
@@ -64,12 +71,39 @@ export function carpetaLocal(raiz) {
 }
 
 /** Dependencias reales: Supabase (base de datos + Storage) y el generador del PDF. */
-export function supabaseDeps({ url, secretKey, allowedOrigins, localDir = CARPETA_POR_DEFECTO }) {
+export function supabaseDeps({ url, secretKey, allowedOrigins, localDir = CARPETA_POR_DEFECTO, mail = null }) {
   const supabase = createClient(url, secretKey, { auth: { persistSession: false, autoRefreshToken: false } });
   const plantilla = Uint8Array.from(Buffer.from(PLANTILLA_BASE64, "base64"));
   return {
     allowedOrigins,
     local: carpetaLocal(localDir),
+    mail,
+    async claimEmail(c) {
+      const atascado = new Date(Date.now() - CORREO_ATASCADO_MS).toISOString();
+      const { data, error } = await supabase.from("certificates")
+        .update({ email_status: "sending", email_attempts: (c.email_attempts || 0) + 1 })
+        .eq("id", c.id)
+        .eq("email_attempts", c.email_attempts || 0)
+        .or(`email_status.in.(pending,error),and(email_status.eq.sending,updated_at.lt."${atascado}")`)
+        .select("id");
+      if (error) throw error;
+      return data.length === 1;
+    },
+    async findHolder(registrationId) {
+      const { data, error } = await supabase.from("registrations")
+        .select("email, name, language, status, verification_token, verification_expires_at")
+        .eq("id", registrationId).maybeSingle();
+      if (error) throw error;
+      return data;
+    },
+    async markEmail(id, { status, error: mensaje = null }) {
+      const { error } = await supabase.from("certificates").update({
+        email_status: status,
+        email_error: mensaje,
+        ...(status === "sent" ? { email_sent_at: new Date().toISOString() } : {}),
+      }).eq("id", id);
+      if (error) throw error;
+    },
     log: (...a) => console.warn("[certificados]", ...a),
     async findCertificate(token) {
       const { data, error } = await supabase.from("certificates").select(COLUMNAS).eq("verification_token", token).maybeSingle();
@@ -207,6 +241,17 @@ if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
   } catch (e) {
     console.warn(`[certificados] No se pudo crear ${localDir}: ${e.message}. Solo se guardará en Supabase.`);
   }
-  createServer(supabaseDeps({ url: process.env.SUPABASE_URL, secretKey: process.env.SUPABASE_SECRET_KEY, allowedOrigins, localDir }))
+  const mail = process.env.MAIL_USER && process.env.MAIL_PASS
+    ? crearTransporteSmtp({
+      host: process.env.MAIL_HOST || "smtp.office365.com",
+      port: Number(process.env.MAIL_PORT) || 587,
+      user: process.env.MAIL_USER,
+      pass: process.env.MAIL_PASS,
+      from: process.env.MAIL_FROM || process.env.MAIL_USER,
+      fromName: process.env.MAIL_FROM_NAME || "HCGA Trading LLC",
+    })
+    : null;
+  if (!mail) console.warn("[certificados] MAIL_USER/MAIL_PASS no definidos: el correo automático está desactivado.");
+  createServer(supabaseDeps({ url: process.env.SUPABASE_URL, secretKey: process.env.SUPABASE_SECRET_KEY, allowedOrigins, localDir, mail }))
     .listen(port, () => console.log(`[certificados] escuchando en el puerto ${port}; copias locales en ${path.resolve(localDir)}`));
 }
